@@ -1,0 +1,11 @@
+{
+  "reviews_count": 298,
+  "sentences_count": 528,
+  "aspect_mentions_count": 1106,
+  "clusters_count": 898,
+  "outlier_count": 0,
+  "traceability_rate": 1.0,
+  "runtime_seconds": 0.67,
+  "device": "cuda",
+  "gpu_name": "NVIDIA GeForce RTX 4050 Laptop GPU"
+}

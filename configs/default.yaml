@@ -1,0 +1,56 @@
+# ProductLens — Default Configuration
+# Every key corresponds to a dataclass field in productlens/config.py
+
+project:
+  seed: 42
+  artifact_root: artifacts
+
+data:
+  dataset_name: McAuley-Lab/Amazon-Reviews-2023
+  categories: []
+  max_reviews: 10000
+  chunk_size: 1000
+  min_review_chars: 20
+  language: en
+  local_path: ""
+  train_ratio: 0.8
+  val_ratio: 0.1
+  test_ratio: 0.1
+  dedupe_near: false
+  near_dedupe_threshold: 0.9
+
+models:
+  aspect_extractor: microsoft/deberta-v3-base
+  sentiment_classifier: microsoft/deberta-v3-base
+  embedder: BAAI/bge-small-en-v1.5
+
+training:
+  max_length: 256
+  batch_size: 4
+  gradient_accumulation: 4
+  learning_rate: 2.0e-5
+  epochs: 2
+  fp16: true
+  gradient_checkpointing: true
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  save_total_limit: 2
+
+normalization:
+  mode: category_aware
+  min_cluster_size: 5
+  min_samples: 2
+  metric: cosine
+  alias_override_path: artifacts/aspects/alias_overrides.yaml
+
+evidence:
+  top_n: 5
+  mmr_lambda: 0.7
+
+aggregation:
+  min_mentions: 3
+  quality_weighting: true
+
+pipeline:
+  cache: true
+  deterministic: true
