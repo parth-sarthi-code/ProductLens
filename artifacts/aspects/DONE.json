@@ -19,8 +19,8 @@
     "spacy": "not installed"
   },
   "input_hash": "",
-  "seconds": 0.67,
-  "timestamp": "2026-09-22T19:08:46.498263+00:00",
+  "seconds": 0.83,
+  "timestamp": "2026-09-22T20:21:42.346132+00:00",
   "status": "success",
   "reviews_count": 298,
   "sentences_count": 528,
@@ -28,7 +28,7 @@
   "clusters_count": 898,
   "outlier_count": 0,
   "traceability_rate": 1.0,
-  "runtime_seconds": 0.67,
+  "runtime_seconds": 0.83,
   "device": "cuda",
   "gpu_name": "NVIDIA GeForce RTX 4050 Laptop GPU"
 }

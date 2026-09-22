@@ -1,236 +1,293 @@
-# ProductLens: Aspect-Level Product Intelligence from Large-Scale Customer Reviews
+# ProductLens: Aspect-Level Product Intelligence from Customer Reviews
 
-[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat&logo=python&logoColor=white)](https://www.python.org/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.6.0%2Bcu124-EE4C2C?style=flat&logo=pytorch&logoColor=white)](https://pytorch.org/)
-[![Hugging Face](https://img.shields.io/badge/Transformers-DeBERTa--v3-FFD21E?style=flat&logo=huggingface&logoColor=black)](https://huggingface.co/microsoft/deberta-v3-base)
-[![Embeddings](https://img.shields.io/badge/BGE--Embeddings-bge--small-blue?style=flat)](https://huggingface.co/BAAI/bge-small-en-v1.5)
-[![Clustering](https://img.shields.io/badge/Clustering-HDBSCAN-success?style=flat)](https://hdbscan.readthedocs.io/)
-[![Tests](https://img.shields.io/badge/Tests-122%20Passed-brightgreen?style=flat&logo=pytest&logoColor=white)](tests/)
-[![Paper](https://img.shields.io/badge/Report-Academic%20Paper-orange?style=flat&logo=arxiv&logoColor=white)](report.md)
+ProductLens is a machine learning system that analyzes customer reviews and extracts component-level insights instead of relying on a single overall star rating.
 
-**ProductLens** is an end-to-end, research-grade Aspect-Based Sentiment Analysis (ABSA) and product intelligence system built on the **Amazon Reviews 2023** corpus. 
+When people buy products on platforms like Amazon, reviews cover many different things at once: a laptop might have a gorgeous screen, but terrible battery life and a loud fan. Standard sentiment analysis collapses all of this into a single score like "3.5 out of 5 stars" or "Positive", which hides what is actually good or bad about the product.
 
-Rather than collapsing consumer opinions into monolithic 1-to-5 star ratings or generating ungrounded, hallucination-prone summaries, ProductLens decomposes unstructured customer feedback into fine-grained, verifiable aspect-sentiment tuples anchored to exact document offsets. Every component score, metric, and opinion is mathematically and cryptographically auditable back to its source review and sentence.
+ProductLens uses Aspect-Based Sentiment Analysis (ABSA) to break down reviews into specific hardware components (like Display, Battery, Keyboard, and Build Quality), scores each component separately, and links every score back to the exact sentence written by the real customer.
 
 ---
 
-## 📑 Research Paper & Technical Report
+## Companion Documentation
 
-The full mathematical formulation, algorithm pseudo-code, theoretical proofs, and empirical benchmarks are documented in the accompanying research paper:
+This repository contains two in-depth reference documents:
 
-👉 **[`report.md`](report.md)** — *ProductLens: Aspect-Level Product Intelligence from Large-Scale Customer Reviews (Technical Report & Research Architecture)*
-
----
-
-## 🌟 Key Capabilities & Architectural Principles
-
-* **100% Traceability & Zero Hallucination:** Every extracted aspect maintains a triple of coordinates: `(review_id, sentence_id, [start_char, end_char])`. All displayed insights trace to exact spans in source reviews.
-* **Transformer BIO Sequence Tagging:** Token classification powered by `microsoft/deberta-v3-base` (with `roberta-base` as alternative) featuring subword-to-character span reconstruction that cleanly isolates multiple aspects within a single sentence.
-* **Domain-Agnostic Semantic Normalization:** Dense $384$-dimensional embeddings (`BAAI/bge-small-en-v1.5`) clustered via category-aware HDBSCAN. Outlier mentions are preserved rather than dropped. No hard-coded laptop-only ontologies.
-* **Active Merge Safety Guards:** Topological guards that prevent false merges between base entities and accessories (e.g., *screen* vs. *screen protector*, *phone* vs. *phone case*) and prohibit merges solely on generic modifiers (*sound quality* vs. *build quality*).
-* **Six-Domain Aspect Typing:** Mentions are classified into `product`, `service`, `delivery`, `seller`, `packaging`, or `unknown`. Logistics complaints (e.g., carrier transit delays or unboxing damage) never corrupt physical product quality ratings.
-* **Leakage-Free Partitioning:** Product-aware splitting guarantees that all reviews for any given ASIN appear exclusively within train, validation, or test sets.
-* **Consumer Hardware Optimization:** Engineered to run on consumer GPUs (NVIDIA RTX 4050 6 GB / RTX 5050 8 GB) with mixed-precision FP16, automatic CUDA OOM recovery, persistent embedding caching, and pure CPU fallback.
+* **what_and_why.md**: An architectural guide explaining every design decision, model selection rationale, and why this system is built this way.
+* **report.md**: A formal technical report in academic research paper format with mathematical formulations, span algorithms, and benchmark tables.
 
 ---
 
-## 🏗️ System Architecture
+## The Problem: Why Simple Ratings and LLMs Fall Short
 
+### 1. The Single Star Rating Hides the Real Story
+Imagine a customer shopping for a laptop who finds a model rated 3.2 stars. 
+* Is the rating low because the processor is slow?
+* Is it low because the battery only lasts two hours?
+* Or did the buyer simply dislike the colour?
+
+A single number cannot answer these questions. A buyer who always uses their laptop at a desk plugged into power might not care about battery life at all, but they care deeply about screen brightness. ProductLens separates reviews into individual component ratings so buyers and engineers see the full breakdown.
+
+### 2. Delivery and Packaging Issues Pollute Product Ratings
+A large number of negative reviews on e-commerce platforms have nothing to do with the product itself:
+> "1 star: The delivery driver threw the package over the fence, the cardboard box was crushed, and it arrived three days late."
+
+If this review is mixed into the product score, the product looks flawed even though the hardware inside works perfectly. ProductLens classifies every mention into categories such as Product, Delivery, Packaging, Seller, and Customer Service, ensuring logistical complaints do not drag down product hardware scores.
+
+### 3. The Pitfalls of Simple ChatGPT or LLM Summaries
+Many modern projects simply paste reviews into a Large Language Model (like GPT-4) with a prompt asking for a summary. While this sounds easy, it introduces serious real-world engineering problems:
+* **Hallucinations:** Large generative models can invent details or mention features that do not exist in the actual reviews.
+* **Lack of Proof:** You cannot easily click on a generated sentence to see the exact customer review and sentence it came from.
+* **High Cost and Slow Speed:** Sending thousands of customer reviews to external cloud APIs costs significant money per product and takes minutes to run.
+* **Inconsistency:** Running the exact same prompt tomorrow can produce a different summary with different scores.
+
+ProductLens solves this with an auditable, local machine learning pipeline: every extracted point has exact character offsets pointing to the verified source sentence, runs locally on consumer hardware in seconds, and costs nothing in external API fees.
+
+---
+
+## How ProductLens Works: Step-by-Step
+
+ProductLens works as an end-to-end pipeline divided into clear stages:
+
+``` text
++-----------------------------------------------------------------------------+
+|                         PRODUCTLENS PIPELINE OVERVIEW                       |
++-----------------------------------------------------------------------------+
+|                                                                             |
+|  1. Review Ingestion & Cleaning                                             |
+|     Decode HTML entities, remove tracking links, standardize text.          |
+|                                                                             |
+|  2. Sentence Splitting with Abbreviation Protection                         |
+|     Split reviews into clean sentences without breaking on titles           |
+|     like "Dr." or abbreviations like "U.S." and "oz.".                      |
+|                                                                             |
+|  3. Aspect Span Extraction (DeBERTa-v3)                                     |
+|     Use token classification to find exact aspect phrases like              |
+|     "battery life" or "screen" using BIO tagging.                           |
+|                                                                             |
+|  4. Semantic Normalization & Clustering (BGE + HDBSCAN)                     |
+|     Convert phrases into semantic vectors and group synonyms               |
+|     ("screen", "display", "panel") into one canonical concept.              |
+|                                                                             |
+|  5. Active Merge Safety Guards                                              |
+|     Prevent invalid merges (such as "screen" vs. "screen protector",        |
+|     or "sound quality" vs. "build quality").                                |
+|                                                                             |
+|  6. Aspect Typing & Provenance Verification                                 |
+|     Sort mentions into Product, Delivery, Packaging, Service, or Seller.    |
+|     Verify that 100% of mentions link to source reviews with zero error.    |
+|                                                                             |
++-----------------------------------------------------------------------------+
 ```
-+───────────────────────────────────────────────────────────────────────────────────────+
-|                               PRODUCTLENS NLP PIPELINE                                |
-+───────────────────────────────────────────────────────────────────────────────────────+
-|                                                                                       |
-|   Amazon Reviews 2023 / Verified Ingestion Stream                                     |
-|         │                                                                             |
-|         ▼                                                                             |
-|   ┌───────────────────────────────────────────────────────────────────────────────┐   |
-|   │ STAGE 1: DATA FOUNDATION                                                      │   |
-|   │ • Unicode NFC Normalization, HTML Entity Decoding & URL Stripping             │   |
-|   │ • Exact SHA-256 & Near-Duplicate (MinHash Jaccard τ=0.90) Deduplication       │   |
-|   │ • Product-Aware Stratified Splitting (Zero Cross-Split ASIN Leakage)          │   |
-|   │ • Two-Tier Sentence Segmentation (Immutable Titles + Contextual Abbrs)        │   |
-|   └──────────────────────────────────────┬────────────────────────────────────────┘   |
-|                                          │                                            |
-|                                          ▼                                            |
-|   ┌───────────────────────────────────────────────────────────────────────────────┐   |
-|   │ STAGE 2: ASPECT INTELLIGENCE                                                  │   |
-|   │ • BIO Sequence Labeling: DeBERTa-v3-base / RoBERTa-base Token Head            │   |
-|   │ • FastTokenizer Subword-to-Character Span Reconstruction                      │   |
-|   │ • Dense Semantic Embeddings: BAAI/bge-small-en-v1.5 + SHA-256 Disk Cache      │   |
-|   │ • Category-Aware HDBSCAN Density Clustering (Metric: Cosine, Outliers Kept)   │   |
-|   │ • Active Merge Safety Guards (Disallowed Accessory & Generic Word Merges)     │   |
-|   │ • Aspect Typing (Product / Service / Delivery / Seller / Packaging / Unknown) │   |
-|   │ • Provenance Audit (100% Byte-Level Verification to Sentence & Clean Text)    │   |
-|   └──────────────────────────────────────┬────────────────────────────────────────┘   |
-|                                          │                                            |
-|                                          ▼                                            |
-|   ┌───────────────────────────────────────────────────────────────────────────────┐   |
-|   │ STAGES 3–6 (Active Roadmap)                                                   │   |
-|   │ • Stage 3: Aspect-Conditioned Sentiment Classification & MMR Evidence Mining │   |
-|   │ • Stage 4: Bayesian Weighted Confidence Aggregation & Contradiction Scores    │   |
-|   │ • Stage 5: High-Throughput Asynchronous FastAPI Service (Pydantic v2)         │   |
-|   │ • Stage 6: Interactive Executive Dashboard (React / Vite + Verbatim Drawers)  │   |
-|   └───────────────────────────────────────────────────────────────────────────────┘   |
-+───────────────────────────────────────────────────────────────────────────────────────+
-```
+
+### Step 1: Cleaning and Deduplicating Reviews
+Customer reviews on Amazon contain HTML tags, broken characters, and duplicate bot reviews. ProductLens normalizes characters using standard Unicode, strips out web links, and removes both identical copies and near-duplicate reviews using similarity matching.
+
+It also enforces **Product-Aware Splitting**: all reviews for a specific product stay together in either training, validation, or test sets. This ensures the model does not memorize specific product names and must learn genuine aspect language that generalizes to brand new products.
+
+### Step 2: Accurate Sentence Splitting
+Before finding aspects, reviews are split into individual sentences. Naive sentence splitters break text whenever they see a period, which corrupts sentences with abbreviations like "Mr. Smith", "5.5 oz.", or "U.S. version". ProductLens uses an abbreviation-aware state engine that protects titles and abbreviations, keeping character offsets completely accurate.
+
+### Step 3: Finding Aspects with DeBERTa-v3 and BIO Tagging
+Instead of searching for a fixed list of keywords (which misses unusual phrasing), ProductLens uses **DeBERTa-v3-base**, a modern transformer neural network. 
+
+The model classifies every word using the standard **BIO tagging** scheme:
+* **B-ASP (Begin Aspect):** The first word of an aspect phrase.
+* **I-ASP (Inside Aspect):** The continuation words of an aspect phrase.
+* **O (Outside):** Normal words that are not aspects.
+
+Example:
+> "The (O) sound (B-ASP) quality (I-ASP) is (O) great (O) but (O) the (O) microphone (B-ASP) is (O) terrible (O)."
+
+This allows the model to cleanly isolate multiple distinct aspects in a single sentence:
+1. `sound quality` (character offset 4 to 17)
+2. `microphone` (character offset 39 to 49)
+
+### Step 4: Semantic Normalization (Grouping Synonyms Together)
+Different people use different words to describe the same part of a product:
+* "screen", "display", "panel", "IPS monitor" all refer to the **Screen**.
+* "battery life", "battery backup", "runtime" all refer to the **Battery**.
+
+ProductLens converts each extracted phrase into a dense numerical vector using the **BAAI/bge-small-en-v1.5** embedding model. Phrases with similar meanings end up close together in vector space.
+
+Then, an algorithm called **HDBSCAN** groups these vectors into clusters based on density:
+* Unlike older algorithms like k-Means, HDBSCAN does not require you to guess the number of clusters in advance (a blender might have 5 components, while a laptop has 35).
+* Outlier mentions (rare or unusual complaints) are never thrown away. Every mention is kept and given its own concept name so engineers never lose rare defect reports.
+
+### Step 5: Merge Safety Guards (Preventing False Merges)
+Pure machine learning models can sometimes group words that appear in similar contexts but are actually completely different items. For example:
+* The words "screen" and "screen protector" have very high vector similarity because both appear near words like "scratches", "fingerprints", and "glass".
+* If an algorithm merges them, a scratch on a cheap plastic protector will be counted as a defect in an expensive OLED screen!
+
+ProductLens implements strict rule guards:
+* **Accessory Guard:** Terms with accessory words (like "case", "cover", "protector", "sleeve") are never allowed to merge with base product terms.
+* **Generic Word Guard:** Terms that only share generic words (like "quality", "performance", "durability") cannot merge. This prevents "sound quality" from merging with "build quality".
+
+### Step 6: Aspect Typing and Full Audit
+Every aspect mention is tagged with its domain type:
+* **product:** Physical parts (screen, battery, keyboard, zipper, motor).
+* **service:** Customer support, warranties, refund policies.
+* **delivery:** Couriers, shipping speeds, late transit.
+* **packaging:** Cardboard boxes, bubble wrap, unboxing condition.
+* **seller:** Third-party merchants, store responsiveness.
+
+Finally, the system runs an automated audit: it checks that every single extracted aspect can be sliced directly from the original review text using its recorded start and end character positions. If even a single character offset is misaligned, the audit fails.
 
 ---
 
-## 📊 Project Status & Verification Checklist
+## Current Implementation Status
 
-| Milestone | Stage | Implementation Focus | Status | Tests |
-|---|---|---|:---:|:---:|
-| **Stage 1** | **Data Foundation** | Ingestion, Unicode cleaning, deduplication, product splits, two-tier sentence offsets | **Complete** ✅ | 95 / 95 Passing |
-| **Stage 2** | **Aspect Intelligence** | DeBERTa BIO tagging, span reconstruction, BGE normalization, HDBSCAN, alias guards, typing | **Complete** ✅ | 27 / 27 Passing |
-| **Stage 3** | **Sentiment & Evidence** | Aspect-conditioned DeBERTa sentiment ($[\text{CLS}] \text{ Aspect } [\text{SEP}] \text{ Sentence }$), MMR selection | *In Progress* 🔄 | — |
-| **Stage 4** | **Opinion Aggregation** | Quality-weighted scoring, Bayesian confidence intervals, cross-product comparison | *Planned* 📋 | — |
-| **Stage 5** | **API Engine** | Asynchronous FastAPI service, Pydantic v2 validation, Parquet/SQLite query cache | *Planned* 📋 | — |
-| **Stage 6** | **Product Dashboard** | Responsive React/Vite dashboard, component radar charts, verbatim evidence drawers | *Planned* 📋 | — |
+| Stage | Focus Area | Status | Automated Tests |
+|---|---|:---:|:---:|
+| **Stage 1** | Data Foundation (Cleaning, Deduplication, Product Splits, Sentence Offsets) | Complete | 95 / 95 Passed |
+| **Stage 2** | Aspect Intelligence (DeBERTa BIO Tagging, BGE Embeddings, HDBSCAN, Alias Guards) | Complete | 27 / 27 Passed |
+| **Stage 3** | Aspect Sentiment & Evidence Selection (Aspect-Conditioned Sentiment, MMR Quotes) | In Progress | Upcoming |
+| **Stage 4** | Opinion Aggregation Engine (Weighted Component Scorecards, Contradiction Scores) | Planned | Upcoming |
+| **Stage 5** | REST API Backend (FastAPI, Pydantic v2 validation models, SQLite/Parquet query engine) | Planned | Upcoming |
+| **Stage 6** | Web Dashboard (Interactive Component Cards, Radar Charts, Customer Quote Drawers) | Planned | Upcoming |
 
-**Total Automated Tests:** **122 / 122 passing (100%) in 3.08 seconds.**
+**Test Suite Health:** 122 automated unit and integration tests passing in ~3 seconds.
 
 ---
 
-## 📁 Repository Structure
+## Project Structure
 
-```text
+``` text
 ProductLens/
-├── configs/
-│   └── default.yaml               # Authoritative hierarchical configuration (smoke/dev/full)
-├── productlens/                   # Core Python package
-│   ├── __init__.py                # Package exports (v0.1.0)
-│   ├── config.py                  # Frozen configuration dataclasses, profiles, and overrides
-│   ├── schemas.py                 # Canonical dataclass schemas (Review, Sentence, Aspect, etc.)
-│   ├── utils.py                   # Device detection (CUDA/CPU), stable IDs, GPU cleanup, timers
-│   ├── data/                      # Stage 1: Data Engineering & Foundation
-│   │   ├── __init__.py
-│   │   ├── clean.py               # Unicode NFC normalization, HTML entity/tag and URL stripping
-│   │   ├── dedupe.py              # Exact SHA-256 and MinHash near-duplicate filtering
-│   │   ├── load_amazon.py         # Multi-format ingestion (Hugging Face streaming & local files)
-│   │   ├── sampling.py            # Category, product-stratified, rating, and random sampling
-│   │   ├── sentence_split.py      # Two-tier abbreviation-aware sentence segmentation
-│   │   ├── split.py               # Product-aware train/val/test splitting (zero leakage)
-│   │   └── synthetic.py           # Deterministic 302-review multi-category smoke dataset
-│   └── aspects/                   # Stage 2: Aspect Intelligence & Normalization
-│       ├── __init__.py
-│       ├── aliases.py             # Deterministic alias mapping, typing & merge safety guards
-│       ├── bio_model.py           # Transformer BIO tagging head & subword span reconstruction
-│       ├── candidates.py          # Syntactic noun phrase & compound candidate extraction
-│       ├── clustering.py          # Category-aware HDBSCAN clustering & outlier preservation
-│       ├── normalize.py           # Dense embeddings (BGE-small), HashingEmbedder & disk cache
-│       ├── run.py                 # CLI pipeline runner for Stage 2
-│       └── train_extractor.py     # DeBERTa token classification trainer with OOM recovery
-├── notebooks/                     # Interactive walkthroughs (percent format)
-│   ├── 01_data.py                 # Data foundation, cleaning, and offset verification
-│   └── 02_aspects.py              # Aspect extraction, clustering, typing, and traceability
-├── tests/                         # Pytest test suite
-│   ├── conftest.py                # Shared fixtures and mock generators
-│   ├── test_data.py               # Ingestion, cleaning, deduplication, and split tests
-│   ├── test_sentence_split.py     # Sentence boundary and offset preservation tests
-│   ├── test_aspects.py            # BIO reconstruction, multi-aspect spans, typing, and offsets
-│   └── test_normalization.py      # Embeddings, HDBSCAN, outlier retention, and alias safety
-├── artifacts/                     # Generated pipeline outputs & verification markers
-│   └── aspects/
-│       ├── DONE.json              # Stage completion verification marker
-│       ├── metrics.json           # Execution and clustering metrics
-│       ├── aspect_mentions.parquet# Extracted aspect spans with exact character offsets
-│       └── aspect_clusters.parquet# Normalized canonical aspect clusters
-├── report.md                      # Comprehensive academic research report
-├── requirements.txt               # Locked production dependencies
-├── .gitignore                     # Clean exclusion of environments, caches, and weights
-└── README.md
+|-- configs/
+|   `-- default.yaml               # Hierarchical pipeline and training settings
+|-- productlens/                   # Main Python application package
+|   |-- config.py                  # Configuration loader and profile manager
+|   |-- schemas.py                 # Structured dataclasses for Reviews, Sentences, Aspects
+|   |-- utils.py                   # GPU detection, stable IDs, timing, and cleanup
+|   |-- data/                      # Stage 1: Data Engineering
+|   |   |-- clean.py               # Text sanitization and HTML decoding
+|   |   |-- dedupe.py              # Exact and near-duplicate review filtering
+|   |   |-- load_amazon.py         # Amazon review dataset loading
+|   |   |-- sentence_split.py      # Abbreviation-aware sentence segmentation
+|   |   |-- split.py               # Product-aware train/test splitting
+|   |   `-- synthetic.py           # Deterministic multi-category smoke dataset
+|   `-- aspects/                   # Stage 2: Aspect Intelligence
+|       |-- aliases.py             # Deterministic alias mapping and merge safety guards
+|       |-- bio_model.py           # Transformer BIO sequence tagging and span builder
+|       |-- candidates.py          # Candidate phrase extractor and stopword filter
+|       |-- clustering.py          # Category-aware HDBSCAN clustering
+|       |-- normalize.py           # Dense vector embedding generator and disk cache
+|       |-- run.py                 # Command-line pipeline runner
+|       `-- train_extractor.py     # DeBERTa token classification training pipeline
+|-- notebooks/                     # Interactive walkthroughs (percent script format)
+|   |-- 01_data.py                 # Data foundation and sentence offset verification
+|   `-- 02_aspects.py              # Aspect extraction, clustering, and audit walkthrough
+|-- tests/                         # Pytest test suite
+|   |-- test_data.py               # Data loading, cleaning, and splitting tests
+|   |-- test_sentence_split.py     # Sentence boundary and offset preservation tests
+|   |-- test_aspects.py            # BIO reconstruction, multi-aspect spans, typing tests
+|   `-- test_normalization.py      # Embeddings, HDBSCAN clustering, and alias safety tests
+|-- artifacts/                     # Generated pipeline outputs and verification markers
+|   `-- aspects/
+|       |-- DONE.json              # Stage completion verification marker
+|       |-- metrics.json           # Execution metrics and cluster statistics
+|       |-- aspect_mentions.parquet# Extracted aspects with character offsets
+|       `-- aspect_clusters.parquet# Grouped canonical aspect clusters
+|-- what_and_why.md                # Comprehensive architectural rationale and trade-offs
+|-- report.md                      # Academic research paper report with technical details
+|-- requirements.txt               # Project Python dependencies
+`-- README.md
 ```
 
 ---
 
-## ⚡ Quickstart & Installation
+## Quickstart Guide
 
-### 1. Environment Setup
-
-ProductLens requires Python 3.11+. We recommend using [`uv`](https://github.com/astral-sh/uv) or a standard `venv`:
+### 1. Requirements and Setup
+ProductLens requires Python 3.11+. You can set up an environment using standard Python virtual environments:
 
 ```bash
 # Clone the repository
 git clone https://github.com/parth-sarthi-code/ProductLens.git
 cd ProductLens
 
-# Create and activate virtual environment
+# Create and activate a virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
 
-# Install dependencies (with CUDA 12.4 support if GPU is available)
+# Install dependencies (installs PyTorch with CUDA if available)
 pip install torch --index-url https://download.pytorch.org/whl/cu124
 pip install -r requirements.txt
 ```
 
-### 2. Verify Installation & Run Tests
-
-Run the full automated test suite (runs 100% offline, GPU-independent):
+### 2. Run the Full Test Suite
+All tests run 100% locally without needing an active internet connection or GPU:
 
 ```bash
 python -m pytest tests/ -q
 ```
-*Expected Output:* `122 passed in ~3.0s`.
+*Expected Result:* `122 passed in ~3.0s`
 
-### 3. Execute the Stage 2 Smoke Pipeline
-
-Run the end-to-end aspect extraction and normalization pipeline on the deterministic smoke corpus:
+### 3. Run the Stage 2 Aspect Pipeline
+Execute the complete end-to-end extraction and clustering pipeline on the verified smoke dataset:
 
 ```bash
 python -m productlens.aspects.run --profile smoke
 ```
 
-Outputs will be saved directly into `artifacts/aspects/`:
-* `artifacts/aspects/aspect_mentions.parquet`: Extracted spans with document offsets.
-* `artifacts/aspects/aspect_clusters.parquet`: Discovered canonical clusters and medoids.
-* `artifacts/aspects/DONE.json`: Execution verification marker with timestamp and config hash.
+Outputs will be saved in `artifacts/aspects/`:
+* `aspect_mentions.parquet`: Every extracted aspect with exact sentence and review offsets.
+* `aspect_clusters.parquet`: The grouped canonical clusters and representative terms.
+* `DONE.json`: Verification record confirming runtime, hardware used, and 100% offset validity.
 
-### 4. Interactive Notebook Walkthroughs
-
-The notebooks are maintained in Jupytext percent format (`.py`) for clean version control:
+### 4. Run the Walkthrough Notebooks
+The notebooks are maintained as clean Python scripts using the Jupytext percent format:
 
 ```bash
-# Execute Notebook 01: Data Foundation
+# Notebook 1: Data cleaning, deduplication, and sentence splitting
 python notebooks/01_data.py
 
-# Execute Notebook 02: Aspect Intelligence
+# Notebook 2: Aspect extraction, clustering, typing, and verification
 python notebooks/02_aspects.py
 ```
 
 ---
 
-## 🔬 Benchmark Highlights (Stage 2)
+## Hardware and Performance
 
-Evaluated across $298$ cleaned reviews and $528$ sentences across 6 Amazon categories (Electronics, Beauty, Home, Sports, Books, Automotive):
+ProductLens is engineered to run on standard student and consumer hardware without requiring expensive cloud instances:
 
-* **Exact Offset Traceability:** **100.0%** (0 character offset mismatches between extracted spans and source text).
-* **Multi-Aspect Isolation:** Successfully separates co-occurring aspects within single sentences:
-  > *"The sound quality is excellent but the microphone is terrible."*  
-  > $\implies$ `sound quality` (offsets $[4:17]$) & `microphone` (offsets $[39:49]$).
-* **Aspect Typing Accuracy:** Correctly routes logistical mentions (e.g., courier transit delays or box damage) away from physical product metrics.
-* **Pipeline Latency:** **1.38 seconds** for end-to-end smoke execution on an NVIDIA GeForce RTX 4050 Laptop GPU (peak VRAM: $1.84\text{ GB}$).
+* **Tested Machine:** Standard laptop with an NVIDIA GeForce RTX 4050 GPU (6 GB VRAM) running Linux.
+* **GPU Memory Usage:** Under 2.0 GB of VRAM during model inference (leaving plenty of memory for other applications).
+* **Speed:** The Stage 2 smoke pipeline processes hundreds of reviews, extracts over 1,100 aspect mentions, and clusters them in under 1.5 seconds.
+* **CPU Fallback:** If no NVIDIA GPU is detected, the entire pipeline automatically switches to CPU execution without crashing.
 
 ---
 
-## 📖 Citation & Academic Reference
+## Technology Stack
 
-If you use ProductLens or refer to the technical methodology in your research, please cite:
+* **Language:** Python 3.11+
+* **Deep Learning & Transformers:** PyTorch, Hugging Face Transformers (`microsoft/deberta-v3-base`)
+* **Vector Embeddings & Clustering:** Sentence-Transformers (`BAAI/bge-small-en-v1.5`), HDBSCAN, Scikit-learn
+* **Data Storage & DataFrames:** Pandas, PyArrow (Parquet)
+* **Testing & Configuration:** Pytest, PyYAML
+* **Upcoming Serving & UI:** FastAPI, Pydantic v2, React 18, Vite
+
+---
+
+## Citation
+
+If you refer to ProductLens or its technical architecture in your academic project or research, please cite:
 
 ```bibtex
 @techreport{productlens2026,
   title       = {ProductLens: Aspect-Level Product Intelligence from Large-Scale Customer Reviews},
   author      = {Sarthi, Parth and ProductLens Systems Group},
-  institution = {NLP \& Machine Intelligence Systems Laboratory},
+  institution = {NLP and Machine Intelligence Systems Laboratory},
   year        = {2026},
   month       = {September},
   url         = {https://github.com/parth-sarthi-code/ProductLens},
-  note        = {Technical Report \& Research Architecture}
+  note        = {Technical Report and Architecture Guide}
 }
 ```
 
 ---
 
-## 📜 License
+## License
 
-This project is licensed under the Apache 2.0 License — see the repository files for details.
+This project is licensed under the Apache 2.0 License. See the repository files for details.
